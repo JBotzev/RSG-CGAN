@@ -6,7 +6,7 @@ import numpy as np
 
 #Load .csv renewables data into GANs model
 
-def load_wind():
+def load_wind(label_type='datasets/labels_wind_24.csv'):
     #Example dataset created for evnet_based GANs wind scenarios generation
     # Data from NREL wind integrated datasets
     with open('datasets/Germany_wind_signal_C.csv', 'r') as csvfile:
@@ -25,13 +25,19 @@ def load_wind():
             trX = train
         else:
             trX = np.concatenate((trX, train), axis=0)
-    print("Shape TrX", shape(trX))
+    # print("Shape TrX", shape(trX))
 
-    with open('datasets/labels_wind_24.csv', 'r') as csvfile:
+    label_str = label_type
+    if label_type == 1:
+        label_str = 'datasets/labels_wind_24.csv'
+    if label_type == 2:
+        label_str = 'datasets/bi_labels_Germany_C.csv'
+
+    with open(label_str, 'r') as csvfile:
         reader = csv.reader(csvfile)
         rows = [row for row in reader]
     label = np.array(rows, dtype=int)
-    print("Label shape", shape(label))
+    # print("Label shape", shape(label))
     return trX, label
 
 

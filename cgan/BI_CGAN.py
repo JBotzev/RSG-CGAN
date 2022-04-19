@@ -2,6 +2,7 @@ from __future__ import print_function, division
 
 import os
 
+import tensorflow as tf
 import pandas as pd
 from keras.datasets import mnist
 from keras.layers import Input, Dense, Reshape, Flatten, Dropout, multiply
@@ -12,7 +13,7 @@ from keras.models import Sequential, Model
 from keras.optimizers import Adam
 from keras.utils import to_categorical
 from keras.layers.merge import concatenate
-
+from keras import metrics
 from load import load_wind
 import plots
 import scipy.misc
@@ -25,7 +26,7 @@ class BI_CGAN():
         # Input shape
         self.img_rows = 1
         self.img_cols = 24
-        self.num_classes = 4
+        self.num_classes = 3
         self.num_channels = 1
         self.img_shape = (self.img_rows, self.img_cols, self.num_channels)
         self.latent_dim = 100
@@ -40,7 +41,7 @@ class BI_CGAN():
 
         # Build and compile the discriminator
         self.discriminator = self.build_discriminator()
-        self.discriminator.compile(loss=['categorical_crossentropy'],
+        self.discriminator.compile(loss=metrics.hinge,
                                    optimizer=optimizer,
                                    metrics=['accuracy'])
 
@@ -63,7 +64,7 @@ class BI_CGAN():
         # The combined model  (stacked generator and discriminator)
         # Trains generator to fool discriminator
         self.combined = Model([noise, label], valid)
-        self.combined.compile(loss='categorical_crossentropy',
+        self.combined.compile(loss=metrics.hinge,
                               optimizer=optimizer)
 
     def build_generator(self):
@@ -154,7 +155,7 @@ class BI_CGAN():
 
         # Load the dataset
         # (X_train, y_train), (_, _) = mnist.load_data()
-        X_train, y_train = load_wind()
+        X_train, y_train = load_wind(2)
         print('X TRAIN')
         print(X_train.shape)
         print('Y TRAIN')
@@ -163,17 +164,12 @@ class BI_CGAN():
         # Configure input
         # X_train = (X_train.astype(np.float32) - 127.5) / 127.5
         X_train = np.expand_dims(X_train, axis=1)
-        y_train = y_train.reshape(-1, 1)
+        y_train = y_train.reshape(-1, self.num_classes)
 
         # Adversarial ground truths
         valid = np.ones((batch_size, 1))
         fake = np.zeros((batch_size, 1))
 
-        # print('before OHE ', y_train.shape, y_train)
-        ohe_labels = to_categorical(y_train, self.num_classes)
-        # # ohe_labels = ohe_labels[:, :, None, None]
-        # # ohe_labels = ohe_labels.reshape(y_train.shape[0], 4)
-        # print('after OHE ', ohe_labels.shape, ohe_labels)
         for epoch in range(epochs):
             # ---------------------
             #  Train Discriminator
@@ -181,11 +177,11 @@ class BI_CGAN():
             # Select a random half batch of images
             idx = np.random.randint(0, X_train.shape[0], batch_size)
 
-            imgs, labels = X_train[idx], ohe_labels[idx]
+            imgs, labels = X_train[idx], y_train[idx]
 
             # print("idx shape: ", idx.shape, idx)
             # print("imgs shape: ", imgs.shape)
-            # print("labels shape: ", labels.shape)
+            # print("labels shape: ", labels.shape, labels)
             # Sample noise as generator input
             noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
 
@@ -210,8 +206,10 @@ class BI_CGAN():
             # ---------------------
             # Condition on labels
             #sampled_labels = np.random.randint(0, 4, batch_size).reshape(-1, 1)
-            fake_labels = np.eye(self.num_classes)[np.random.choice(self.num_classes, batch_size)]
-            #print('fake labels ', fake_labels.shape)
+            #fake_labels = np.eye(self.num_classes)[np.random.choice(self.num_classes, batch_size)]
+            bi_labels = np.array([[0,0,1],[0,1,0],[0,1,1],[1,0,0]])
+            fake_labels = bi_labels[np.random.choice(4, batch_size)]
+            #print('fake labels ', fake_labels.shape,fake_labels)
             # Train the generator
             g_loss = self.combined.train_on_batch([noise, fake_labels], valid)
 
@@ -236,15 +234,20 @@ class BI_CGAN():
     def wasserstein_loss(self, y_true, y_pred):
         return np.mean(y_true * y_pred)
 
-    def OneHot(self, X, n, negative_class=0.):
-        X = np.asarray(X).flatten()
-        if n is None:
-            n = np.max(X) + 1
-        Xoh = np.ones((len(X), n)) * negative_class
-        for i in range(len(X)):
-            m=X[i]
-            Xoh[i,m]=1
-        return Xoh
+    def custom_binary_error(y_true, y_pred):
+        width = y_true.bit_length() if y_true.bit_length() > y_pred.bit_length() else y_pred.bit_length()       # finds the greater width of bit sequence, not sure if needed
+        diff = np.bitwise_xor(y_true, y_pred)       # 1 when different, 0 when same
+        error = np.binary_repr(diff, width=width).count('1')/width       # calculate % of '1's
+        return K.variable(error)
+
+    def custom_binary_error(self, y_true, y_pred):
+        y_true = tf.cast(y_true, tf.bool)
+        y_pred = tf.cast(y_pred, tf.bool)
+        xored = tf.logical_xor(y_true, y_pred)
+        notxored = tf.logical_not(xored)
+        sum_xored = tf.reduce_sum(tf.cast(xored, tf.float32))
+        sum_notxored = tf.reduce_sum(tf.cast(notxored, tf.float32))
+        return sum_xored / (sum_xored + sum_notxored)
 
     # def sample_images(self, epoch):
     #     r, c = 2, 5
@@ -270,8 +273,8 @@ class BI_CGAN():
 
 
 if __name__ == '__main__':
-    title = 'catCExcatCE'
-    epochs = 5000
+    title = 'hinge'
+    epochs = 3000
 
     sample_interval = (epochs) / 10
     cgan = BI_CGAN(title)

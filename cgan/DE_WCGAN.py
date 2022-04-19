@@ -9,10 +9,13 @@ from keras.layers import BatchNormalization, Activation, Embedding, ZeroPadding2
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
 from keras.models import Sequential, Model
-from keras.optimizers import Adam
+from keras.optimizers import RMSprop
+from keras import backend
 from keras import metrics
 from keras.utils import to_categorical
 from keras.layers.merge import concatenate
+from tensorflow.python.keras.constraints import Constraint
+from tensorflow.python.keras.initializers.initializers_v2 import RandomNormal
 
 from load import load_wind
 import plots
@@ -21,7 +24,7 @@ import scipy.misc
 
 import numpy as np
 
-class DE_CGAN():
+class DE_WCGAN():
     def __init__(self, title):
         # Input shape
         self.img_rows = 1
@@ -35,13 +38,14 @@ class DE_CGAN():
         self.g_losses = []
         self.d_losses = []
         self.title = title
+        self.n_critic = 5
         self.generator_in_channels = self.latent_dim + self.num_classes
 
-        optimizer = Adam(0.0002, 0.5)
+        optimizer = RMSprop(lr=0.00005)
 
         # Build and compile the discriminator
         self.discriminator = self.build_discriminator()
-        self.discriminator.compile(loss=[metrics.mean_squared_error],
+        self.discriminator.compile(loss=[self.wasserstein_loss],
                                    optimizer=optimizer,
                                    metrics=['accuracy'])
 
@@ -64,22 +68,24 @@ class DE_CGAN():
         # The combined model  (stacked generator and discriminator)
         # Trains generator to fool discriminator
         self.combined = Model([noise, label], valid)
-        self.combined.compile(loss=metrics.mean_squared_error,
+        self.combined.compile(loss=self.wasserstein_loss,
                               optimizer=optimizer)
 
     def build_generator(self):
         model = Sequential()
+        # weight initialization
+        init = RandomNormal(stddev=0.02)
         # n_nodes = self.img_rows * self.img_cols * self.latent_dim
-        model.add(Dense(256, input_dim=self.latent_dim))
+        model.add(Dense(256, input_dim=self.latent_dim, kernel_initializer=init))
         model.add(LeakyReLU(alpha=0.2))
         model.add(BatchNormalization(momentum=0.8))
-        model.add(Dense(512))
+        model.add(Dense(512, kernel_initializer=init))
         model.add(LeakyReLU(alpha=0.2))
         model.add(BatchNormalization(momentum=0.8))
-        model.add(Dense(1024))
+        model.add(Dense(1024, kernel_initializer=init))
         model.add(LeakyReLU(alpha=0.2))
         model.add(BatchNormalization(momentum=0.8))
-        model.add(Dense(np.prod(self.img_shape,), activation='tanh'))
+        model.add(Dense(np.prod(self.img_shape,), activation='tanh', kernel_initializer=init))
         model.add(Reshape(self.img_shape))
 
         noise = Input(shape=(self.latent_dim,))
@@ -98,16 +104,19 @@ class DE_CGAN():
         return generator
 
     def build_discriminator(self):
+        # weight constraint
+        const = ClipConstraint(0.01)
+        init = RandomNormal(stddev=0.02)
         model = Sequential()
-        model.add(Dense(512, input_dim=np.prod(self.img_shape)))
+        model.add(Dense(512, input_dim=np.prod(self.img_shape), kernel_initializer=init, kernel_constraint=const))
         model.add(LeakyReLU(alpha=0.2))
-        model.add(Dense(512))
-        model.add(LeakyReLU(alpha=0.2))
-        model.add(Dropout(0.4))
-        model.add(Dense(512))
+        model.add(Dense(512, kernel_initializer=init, kernel_constraint=const))
         model.add(LeakyReLU(alpha=0.2))
         model.add(Dropout(0.4))
-        model.add(Dense(1, activation='sigmoid'))
+        model.add(Dense(512, kernel_initializer=init, kernel_constraint=const))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(Dropout(0.4))
+        model.add(Dense(1, activation='sigmoid', kernel_initializer=init, kernel_constraint=const))
 
         img = Input(shape=self.img_shape,)
         label = Input(shape=(1,), dtype='int32')
@@ -202,9 +211,23 @@ class DE_CGAN():
         return np.mean(y_true * y_pred)
 
 if __name__ == '__main__':
-    title = 'MSE'
+    title = 'Was'
     epochs = 5000
 
     sample_interval = (epochs) / 20
-    cgan = DE_CGAN(title)
+    cgan = DE_WCGAN(title)
     cgan.train(epochs=epochs+1, batch_size=32, sample_interval=sample_interval)
+
+
+class ClipConstraint(Constraint):
+    # set clip value when initialized
+    def __init__(self, clip_value):
+        self.clip_value = clip_value
+
+    # clip model weights to hypercube
+    def __call__(self, weights):
+        return backend.clip(weights, -self.clip_value, self.clip_value)
+
+    # get the config
+    def get_config(self):
+        return {'clip_value': self.clip_value}

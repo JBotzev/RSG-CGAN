@@ -5,9 +5,12 @@ from scipy import stats
 import os
 
 def sample_plots(self, save, dir):
-    noise = np.random.normal(self.mean, self.std, (self.num_classes,self.latent_dim))
+    noise = np.random.normal(self.mean, self.std, (4,self.latent_dim))
     decimal_labels = np.arange(0, 4).reshape(-1, 1)
     ohe_labels = np.eye(4)
+    # bi_labels = np.array([[1,0,0],[0,1,1],[0,0,1],[0,1,0]])
+    # bi_labels = bi_labels.reshape(4,self.num_classes)
+    # print('bi labels plot ', bi_labels.shape, bi_labels )
     # print('noise ',noise.shape,noise)
     # print('sampled labels ',sampled_labels.shape, sampled_labels)
     gen_imgs = self.generator.predict([noise, decimal_labels])
@@ -27,7 +30,7 @@ def sample_plots(self, save, dir):
     # plt.ylabel('MW Power Generated')
     fig.tight_layout()
 
-    if not os.path.isdir(dir) and save == True:
+    if not os.path.isdir(dir):
         os.makedirs(dir)
         plt.savefig(dir + "Samples.png")
     # fig.savefig("images/%d/Samples.png" % epoch)
@@ -40,10 +43,11 @@ def plot_loss(self, save, dir):
     plt.ylabel('Loss')
     plt.title("Loss plot")
     plt.legend(['Generator loss','Discriminator loss'])
-    if save:
-        plt.savefig(dir + "Loss.png")
+
+    plt.savefig(dir + "Loss.png")
     # plt.savefig("images/%d" % epoch)
     plt.show()
+    plt.close()
 
 def distributions(self,save, imgs, gen_imgs, dir):
     gen_imgs = gen_imgs.reshape((gen_imgs.shape[0]*gen_imgs.shape[2]))
@@ -54,9 +58,9 @@ def distributions(self,save, imgs, gen_imgs, dir):
     # sns.displot(imgs[0], kde='True')
     plt.title("Distributions")
     plt.legend(['Generated','Real'])
-    if save:
-        plt.savefig(dir + "Distributions.png")
-    plt.show()
 
+    plt.savefig(dir + "Distributions.png")
+    plt.show()
+    plt.close()
     print(stats.ks_2samp(gen_imgs, imgs))
     print(stats.ttest_ind(gen_imgs, imgs))
