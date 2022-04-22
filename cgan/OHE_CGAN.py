@@ -30,8 +30,8 @@ class OHE_CGAN():
         self.num_channels = 1
         self.img_shape = (self.img_rows, self.img_cols, self.num_channels)
         self.latent_dim = 100
-        self.mean = 0
-        self.std = 1
+        self.mean = 0.5
+        self.std = 0.2
         self.g_losses = []
         self.d_losses = []
         self.title = title
@@ -43,7 +43,7 @@ class OHE_CGAN():
         self.discriminator = self.build_discriminator()
         self.discriminator.compile(loss=metrics.mean_squared_error,
             optimizer=optimizer,
-            metrics='accuracy')
+            metrics=metrics.binary_accuracy)
 
         # Build the generator
         self.generator = self.build_generator()
@@ -272,7 +272,7 @@ class OHE_CGAN():
 
 if __name__ == '__main__':
     title = 'MSExMSE'
-    epochs = 2000
+    epochs = 10000
 
     sample_interval = (epochs) / 10
     cgan = OHE_CGAN(title)

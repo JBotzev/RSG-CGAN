@@ -16,7 +16,7 @@ from keras.utils import to_categorical
 from keras.layers.merge import concatenate
 from tensorflow.python.keras.constraints import Constraint
 from tensorflow.python.keras.initializers.initializers_v2 import RandomNormal
-
+from ClipConstraint import ClipConstraint
 from load import load_wind
 import plots
 import scipy.misc
@@ -33,12 +33,13 @@ class DE_WCGAN():
         self.num_channels = 1
         self.img_shape = (self.img_rows, self.img_cols, self.num_channels)
         self.latent_dim = 100
-        self.mean = 0
+        self.mean = 0.5
         self.std = 1
         self.g_losses = []
         self.d_losses = []
+        self.accuracies = []
         self.title = title
-        self.n_critic = 5
+        self.n_critic = 2
         self.generator_in_channels = self.latent_dim + self.num_classes
 
         optimizer = RMSprop(lr=0.00005)
@@ -116,7 +117,7 @@ class DE_WCGAN():
         model.add(Dense(512, kernel_initializer=init, kernel_constraint=const))
         model.add(LeakyReLU(alpha=0.2))
         model.add(Dropout(0.4))
-        model.add(Dense(1, activation='sigmoid', kernel_initializer=init, kernel_constraint=const))
+        model.add(Dense(1, activation='linear', kernel_initializer=init, kernel_constraint=const))
 
         img = Input(shape=self.img_shape,)
         label = Input(shape=(1,), dtype='int32')
@@ -152,34 +153,36 @@ class DE_WCGAN():
 
         # Adversarial ground truths
         valid = np.ones((batch_size, 1))
-        fake = np.zeros((batch_size, 1))
+        fake = -np.ones((batch_size, 1))
 
         for epoch in range(epochs):
+
             # ---------------------
             #  Train Discriminator
             # ---------------------
-            # Select a random half batch of images
-            idx = np.random.randint(0, X_train.shape[0], batch_size)
-
-            imgs, labels = X_train[idx], y_train[idx]
-
-            # print("idx shape: ", idx.shape, idx)
-            # print("imgs shape: ", imgs.shape)
-            # print("labels shape: ", labels.shape)
-            # Sample noise as generator input
-            noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
-
-            # Generate a half batch of new images
-            gen_imgs = self.generator.predict([noise, labels])
-            # print("gen imgs ", gen_imgs.shape)
-
-            # print('final imgs ', imgs.shape)
-            # print('final labels ', labels.shape)
-            # print('final valid ', valid.shape)
-            # Train the discriminator
-            d_loss_real = self.discriminator.train_on_batch([imgs, labels], valid)
-            d_loss_fake = self.discriminator.train_on_batch([gen_imgs, labels], fake)
-            d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+            d_loss_temp, temp_acc = list(), list()
+            for _ in range(self.n_critic):
+                # Select a random half batch of images
+                idx = np.random.randint(0, X_train.shape[0], batch_size)
+                imgs, labels = X_train[idx], y_train[idx]
+                # print("idx shape: ", idx.shape, idx)
+                # print("imgs shape: ", imgs.shape)
+                # print("labels shape: ", labels.shape)
+                # Sample noise as generator input
+                noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
+                # Generate a half batch of new images
+                gen_imgs = self.generator.predict([noise, labels])
+                # print("gen imgs ", gen_imgs.shape)
+                # print('final imgs ', imgs.shape)
+                # print('final labels ', labels.shape)
+                # Train the discriminator
+                d_loss_real = self.discriminator.train_on_batch([imgs, labels], valid)
+                d_loss_fake = self.discriminator.train_on_batch([gen_imgs, labels], fake)
+                d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+                d_loss_temp.append(d_loss[0])
+                temp_acc.append(d_loss[1])
+            self.d_losses.append(np.mean(d_loss_temp))
+            self.accuracies.append(np.mean(temp_acc))
 
             # ---------------------
             #  Train Generator
@@ -187,19 +190,18 @@ class DE_WCGAN():
             # Condition on labels
             sampled_labels = np.random.randint(0, 4, batch_size).reshape(-1, 1)
             # Train the generator
+            noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
             g_loss = self.combined.train_on_batch([noise, sampled_labels], valid)
 
             # Plot the progress
-            print ("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[1], g_loss))
+            print ("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % (epoch, self.d_losses[epoch-1], 100*self.accuracies[epoch], g_loss))
             self.g_losses.append(g_loss)
-            self.d_losses.append(d_loss[0])
-            # self.w_losses.append(w_loss)
 
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 save = False
                 script_dir = os.path.dirname(__file__)
-                results_dir = os.path.join(script_dir, 'images/Decimal CGAN/%s %d/' %(self.title, epochs))
+                results_dir = os.path.join(script_dir, 'images/Decimal CGAN/%s %d/' %(self.title, epochs-1))
                 if epoch == epochs - 1:
                     save = True
                 plots.sample_plots(self, save, results_dir)
@@ -208,7 +210,7 @@ class DE_WCGAN():
 
     # Defining Wasserstein Loss
     def wasserstein_loss(self, y_true, y_pred):
-        return np.mean(y_true * y_pred)
+        return backend.mean(y_true * y_pred)
 
 if __name__ == '__main__':
     title = 'Was'
@@ -217,17 +219,3 @@ if __name__ == '__main__':
     sample_interval = (epochs) / 20
     cgan = DE_WCGAN(title)
     cgan.train(epochs=epochs+1, batch_size=32, sample_interval=sample_interval)
-
-
-class ClipConstraint(Constraint):
-    # set clip value when initialized
-    def __init__(self, clip_value):
-        self.clip_value = clip_value
-
-    # clip model weights to hypercube
-    def __call__(self, weights):
-        return backend.clip(weights, -self.clip_value, self.clip_value)
-
-    # get the config
-    def get_config(self):
-        return {'clip_value': self.clip_value}

@@ -30,8 +30,8 @@ class BI_CGAN():
         self.num_channels = 1
         self.img_shape = (self.img_rows, self.img_cols, self.num_channels)
         self.latent_dim = 100
-        self.mean = 0
-        self.std = 1
+        self.mean = 0.5
+        self.std = 0.2
         self.g_losses = []
         self.d_losses = []
         self.title = title

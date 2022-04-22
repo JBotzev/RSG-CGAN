@@ -30,8 +30,8 @@ class DE_CGAN():
         self.num_channels = 1
         self.img_shape = (self.img_rows, self.img_cols, self.num_channels)
         self.latent_dim = 100
-        self.mean = 0
-        self.std = 1
+        self.mean = 0.5
+        self.std = 0.5
         self.g_losses = []
         self.d_losses = []
         self.title = title
@@ -41,9 +41,9 @@ class DE_CGAN():
 
         # Build and compile the discriminator
         self.discriminator = self.build_discriminator()
-        self.discriminator.compile(loss=[metrics.mean_squared_error],
+        self.discriminator.compile(loss=[metrics.binary_crossentropy],
                                    optimizer=optimizer,
-                                   metrics=['accuracy'])
+                                   metrics=metrics.binary_accuracy)
 
         # Build the generator
         self.generator = self.build_generator()
@@ -64,7 +64,7 @@ class DE_CGAN():
         # The combined model  (stacked generator and discriminator)
         # Trains generator to fool discriminator
         self.combined = Model([noise, label], valid)
-        self.combined.compile(loss=metrics.mean_squared_error,
+        self.combined.compile(loss=metrics.binary_crossentropy,
                               optimizer=optimizer)
 
     def build_generator(self):
@@ -190,19 +190,18 @@ class DE_CGAN():
             if epoch % sample_interval == 0:
                 save = False
                 script_dir = os.path.dirname(__file__)
-                results_dir = os.path.join(script_dir, 'images/Decimal CGAN/%s %d/' %(self.title, epochs))
+                results_dir = os.path.join(script_dir, 'images/Decimal CGAN/%s/v4 %d -noise%d/' %(self.title, epochs-1,self.latent_dim))
                 if epoch == epochs - 1:
                     save = True
-                plots.sample_plots(self, save, results_dir)
-                plots.plot_loss(self, save, results_dir)
-                plots.distributions(self, save, imgs, gen_imgs, results_dir)
 
-    # Defining Wasserstein Loss
-    def wasserstein_loss(self, y_true, y_pred):
-        return np.mean(y_true * y_pred)
+                # Plot and save statisticis
+                plots.sample_plots(self, True, results_dir, epoch)
+                plots.plot_loss(self, True, results_dir, epochs)
+                #plots.distributions(self, True, imgs, gen_imgs, results_dir, epoch)
+                plots.labeled_distributions(self, True, X_train, y_train, results_dir, epoch)
 
 if __name__ == '__main__':
-    title = 'MSE'
+    title = 'bi (0.5,0.5)'
     epochs = 5000
 
     sample_interval = (epochs) / 20

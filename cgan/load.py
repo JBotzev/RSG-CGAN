@@ -16,8 +16,9 @@ def load_wind(label_type='datasets/labels_wind_24.csv'):
     trX = []
     print(shape(rows))
     m = np.ndarray.max(rows)
+    min = np.ndarray.min(rows)
     print("Maximum value of wind", m)
-
+    print("Minimum value of wind", min)
     for x in range(rows.shape[1]):
         train = rows[:, x].reshape(-1, 24)
         # train = train / m
