@@ -8,21 +8,23 @@ from keras.layers import Input, Dense, Reshape, Flatten, Dropout, multiply
 from keras.layers import BatchNormalization, Activation, Embedding, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
+
 from keras.models import Sequential, Model
 from keras.optimizers import Adam
 from keras import metrics
-from keras.utils import to_categorical
-from keras.layers.merge import concatenate
 
 from load import load_wind
 import plots
-import scipy.misc
-
+import wandb
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from wandb.keras import WandbCallback
 
 import numpy as np
 
 class DE_CGAN():
-    def __init__(self, title):
+    def __init__(self):
         # Input shape
         self.img_rows = 1
         self.img_cols = 24
@@ -31,13 +33,14 @@ class DE_CGAN():
         self.img_shape = (self.img_rows, self.img_cols, self.num_channels)
         self.latent_dim = 100
         self.mean = 0.5
-        self.std = 0.5
+        self.std = 1
+        self.learn_rate = 0.0002
         self.g_losses = []
         self.d_losses = []
-        self.title = title
+        self.title = 'bi'
         self.generator_in_channels = self.latent_dim + self.num_classes
 
-        optimizer = Adam(0.0002, 0.5)
+        optimizer = Adam(self.learn_rate, 0.5)
 
         # Build and compile the discriminator
         self.discriminator = self.build_discriminator()
@@ -126,11 +129,11 @@ class DE_CGAN():
         discriminator.summary()
         return discriminator
 
-    def train(self, epochs, batch_size=128, sample_interval=50):
+    def train(self, X_train, y_train, epochs, batch_size=128, sample_interval=50):
 
         # Load the dataset
         # (X_train, y_train), (_, _) = mnist.load_data()
-        X_train, y_train = load_wind()
+
         print('X TRAIN')
         print(X_train.shape)
         print('Y TRAIN')
@@ -190,7 +193,7 @@ class DE_CGAN():
             if epoch % sample_interval == 0:
                 save = False
                 script_dir = os.path.dirname(__file__)
-                results_dir = os.path.join(script_dir, 'images/Decimal CGAN/%s/v4 %d -noise%d/' %(self.title, epochs-1,self.latent_dim))
+                results_dir = os.path.join(script_dir, 'images/Decimal CGAN/%s/%d-(%0.1f,%0.1f)-noise%d-batch%d-lr%0.4f-[256,512,1024,512,512,512]/' %(self.title, epochs-1,self.mean, self.std,self.latent_dim,batch_size,self.learn_rate))
                 if epoch == epochs - 1:
                     save = True
 
@@ -201,9 +204,21 @@ class DE_CGAN():
                 plots.labeled_distributions(self, True, X_train, y_train, results_dir, epoch)
 
 if __name__ == '__main__':
-    title = 'bi (0.5,0.5)'
-    epochs = 5000
+    # wandb.init(project="my-test-project", entity="joanbotzev")
+
+    epochs = 10000
+    batch_size = 64
+    learning_rate = 0.0002
+    # wandb.config = {
+    #     "learning_rate": learning_rate,
+    #     "epochs": epochs,
+    #     "batch_size": batch_size
+    # }
 
     sample_interval = (epochs) / 20
-    cgan = DE_CGAN(title)
-    cgan.train(epochs=epochs+1, batch_size=32, sample_interval=sample_interval)
+    X, y = load_wind()
+    # X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
+
+    cgan = DE_CGAN()
+    cgan.train(X, y, epochs=epochs+1, batch_size=batch_size, sample_interval=sample_interval)
+    #cgan.combined.fit(X_train, y_train, validation_data=(X_test, y_test), callbacks=[WandbCallback()])
