@@ -5,6 +5,7 @@ from scipy import stats
 from keras.utils.vis_utils import plot_model
 import os
 
+
 def sample_plots(self, save, dir, epoch):
     noise = np.random.normal(self.mean, self.std, (4,self.latent_dim))
 
@@ -32,15 +33,14 @@ def sample_plots(self, save, dir, epoch):
     # plt.ylabel('MW Power Generated')
     fig.tight_layout()
 
-    if not os.path.isdir(dir) and save:
-        os.makedirs(dir)
     if save:
         plt.savefig(dir + "Samples %d.png" %epoch)
         self.combined.save(dir + 'model.h5')
-    # fig.savefig("images/%d/Samples.png" % epoch)
     plt.close()
 
+
 def plot_loss(self, save, dir, epoch):
+    plt.figure()
     plt.plot(self.g_losses)
     plt.plot(self.d_losses)
     plt.xlabel('Epochs')
@@ -54,9 +54,12 @@ def plot_loss(self, save, dir, epoch):
     # plt.show()
     plt.close()
 
+
 def distributions(self,save, imgs, gen_imgs, dir, epoch):
+    plt.figure()
     gen_imgs = gen_imgs.reshape((gen_imgs.shape[0]*gen_imgs.shape[2]))
     imgs = imgs.reshape((imgs.shape[0]*imgs.shape[2]))
+
     # print('new shape ', gen_imgs.shape)
     sns.kdeplot(gen_imgs)
     sns.kdeplot(imgs)
@@ -67,8 +70,7 @@ def distributions(self,save, imgs, gen_imgs, dir, epoch):
         plt.savefig(dir + "Distributions %d.png"%epoch)
     # plt.show()
     plt.close()
-    print(stats.ks_2samp(gen_imgs, imgs))
-    print(stats.ttest_ind(gen_imgs, imgs))
+
 
 def labeled_distributions(self,save, X_train, y_train, dir, epoch):
     batch_size = 32
@@ -86,34 +88,25 @@ def labeled_distributions(self,save, X_train, y_train, dir, epoch):
                 idx = np.random.randint(0, X_train.shape[0])
                 if y_train[idx] == i:
                     real_batch.append(X_train[idx])
-                    break;
-
+                    break
 
         real_batch = np.array(real_batch)
-        m = np.ndarray.max(real_batch)
-        min = np.ndarray.min(real_batch)
-        mean = np.ndarray.mean(real_batch)
-        # print("Maximum value of wind", m)
-        # print("Minimum value of wind", min)
-        # print("Mean value of wind", mean)
         # print('Labels %d: '%i, ' ', real_batch.shape)
         gen_batch = self.generator.predict([noise, labels])
         gen_batch = gen_batch.reshape(gen_batch.shape[0]*gen_batch.shape[2])
         real_batch = real_batch.reshape(real_batch.shape[0]*real_batch.shape[2])
         gen_batch_l.append(gen_batch)
         real_batch_l.append(real_batch)
-        print(stats.ks_2samp(real_batch, gen_batch))
-        print(stats.ttest_ind(real_batch, gen_batch))
-
+        # (t_stats, stats.ttest_ind(real_batch, gen_batch))
     r, c = (2, 2)
     fig, axis = plt.subplots(r, c)
     cnt = 0
-    for i in range(r):
+    for k in range(r):
         for j in range(c):
-            sns.kdeplot(gen_batch_l[cnt], ax=axis[i][j])
-            sns.kdeplot(real_batch_l[cnt], ax=axis[i][j])
-            axis[i,j].set_title("Wind: %d" % cnt)
-            axis[i,j].legend(['Generated','Real'])
+            sns.kdeplot(gen_batch_l[cnt], ax=axis[k][j])
+            sns.kdeplot(real_batch_l[cnt], ax=axis[k][j])
+            axis[k,j].set_title("Wind: %d" % cnt)
+            axis[k,j].legend(['Generated','Real'])
             cnt += 1
     fig.tight_layout()
 
@@ -121,3 +114,71 @@ def labeled_distributions(self,save, X_train, y_train, dir, epoch):
         plt.savefig(dir + "Distributions %d.png"%(epoch))
     # plt.show()
     plt.close()
+
+
+def record_stats(self, X_train, y_train):
+    batch_size = 32
+    noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
+    # print('LABELED DISTRIBUTIONS')
+    # print(X_train.shape[0])
+    gen_batch_l = []
+    real_batch_l = []
+    for i in range(self.num_classes):
+        real_batch = []
+        labels = np.full(shape=batch_size,fill_value=i,dtype=np.int)
+
+        for k in range(batch_size):
+            for _ in range(X_train.shape[0]):
+                idx = np.random.randint(0, X_train.shape[0])
+                if y_train[idx] == i:
+                    real_batch.append(X_train[idx])
+                    break
+
+        real_batch = np.array(real_batch)
+        gen_batch = self.generator.predict([noise, labels])
+        gen_batch = gen_batch.reshape(gen_batch.shape[0]*gen_batch.shape[2])
+        real_batch = real_batch.reshape(real_batch.shape[0]*real_batch.shape[2])
+        gen_batch_l.append(gen_batch)
+        real_batch_l.append(real_batch)
+
+        # KS statistic
+        (ks_stat, ks_pval) = stats.ks_2samp(real_batch, gen_batch)
+        self.ks_stats[i].append(ks_stat)
+        self.ks_pvals[i].append(ks_pval)
+        # T-test
+        (t_stat, t_pval) = stats.ttest_ind(real_batch, gen_batch)
+        self.t_stats[i].append(t_stat)
+        self.t_pvals[i].append(t_pval)
+
+def save_stats(self, directory, stats, pvals, stats_summ, pvals_summ, title, epoch):
+    plt.figure()
+    r, c = (2, 2)
+    fig, axis = plt.subplots(r, c)
+    cnt = 0
+    for i in range(r):
+        for j in range(c):
+            axis2 = axis[i, j].twinx()
+            axis[i, j].plot(stats[cnt])
+            axis2.plot(pvals[cnt], color='orange', label='P value', alpha=0.7)
+            axis[i, j].set_title("Wind: %d" % cnt)
+            fig.legend(['Statistic','P value'],loc='upper left')
+            axis[i, j].set_xlabel('Iterations')
+            axis[i, j].set_ylabel('Statistic')
+            axis2.set_ylabel('P value')
+            cnt += 1
+    fig.tight_layout()
+    plt.savefig(directory + "Statistics %s %d.png"%(title,epoch))
+    plt.close()
+
+    fig, ax = plt.subplots()
+    ax2 = ax.twinx()
+    ax.plot(stats_summ)
+    ax2.plot(pvals_summ, color="orange", label='P value', alpha=0.7)
+
+    plt.title("Summary %s statistic" % title)
+    fig.legend(['Statistic','P value'],loc='upper left')
+    ax.set_xlabel('Epochs')
+    ax.set_ylabel('Statistic')
+    ax2.set_ylabel('P value')
+    plt.savefig(directory + "Statistics Summary %s %d.png"%(title,epoch))
+    plt.close('all')

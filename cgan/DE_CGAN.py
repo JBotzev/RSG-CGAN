@@ -12,6 +12,7 @@ from keras.layers.convolutional import UpSampling2D, Conv2D
 from keras.models import Sequential, Model
 from keras.optimizers import Adam
 from keras import metrics
+from scipy import stats
 
 from load import load_wind
 import plots
@@ -31,12 +32,15 @@ class DE_CGAN():
         self.num_classes = 4
         self.num_channels = 1
         self.img_shape = (self.img_rows, self.img_cols, self.num_channels)
-        self.latent_dim = 100
+        self.latent_dim = 300
         self.mean = 0.5
-        self.std = 1
-        self.learn_rate = 0.0002
+        self.std = 2
+        self.learn_rate = 0.0005
         self.g_losses = []
         self.d_losses = []
+        self.ks_stats, self.ks_pvals = [[] for _ in range(self.num_classes)], [[] for _ in range(self.num_classes)]
+        self.t_stats, self.t_pvals = [[] for _ in range(self.num_classes)], [[] for _ in range(self.num_classes)]
+        self.ks_stats_summ, self.ks_pvals_summ, self.t_stats_summ, self.t_pvals_summ = [], [], [], []
         self.title = 'bi'
         self.generator_in_channels = self.latent_dim + self.num_classes
 
@@ -189,25 +193,42 @@ class DE_CGAN():
             self.d_losses.append(d_loss[0])
             # self.w_losses.append(w_loss)
 
+            # Save distribution statistic
+            # KS statistic
+            gen_batch = gen_imgs.reshape(gen_imgs.shape[0]*gen_imgs.shape[2])
+            real_batch = imgs.reshape(imgs.shape[0]*imgs.shape[2])
+            (ks_stat, ks_pval) = stats.ks_2samp(real_batch, gen_batch)
+            self.ks_stats_summ.append(ks_stat)
+            self.ks_pvals_summ.append(ks_pval)
+            # T-test statistic
+            (t_stat, t_pval) = stats.ttest_ind(real_batch, gen_batch)
+            self.t_stats_summ.append(t_stat)
+            self.t_pvals_summ.append(t_pval)
+            if epoch % 20 == 0:
+                plots.record_stats(self, X_train, y_train)
+            # print(self.ks_stats)
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 save = False
                 script_dir = os.path.dirname(__file__)
                 results_dir = os.path.join(script_dir, 'images/Decimal CGAN/%s/%d-(%0.1f,%0.1f)-noise%d-batch%d-lr%0.4f-[256,512,1024,512,512,512]/' %(self.title, epochs-1,self.mean, self.std,self.latent_dim,batch_size,self.learn_rate))
+                if not os.path.isdir(results_dir):
+                    os.makedirs(results_dir)
                 if epoch == epochs - 1:
                     save = True
-
                 # Plot and save statisticis
                 plots.sample_plots(self, True, results_dir, epoch)
                 plots.plot_loss(self, True, results_dir, epochs)
                 #plots.distributions(self, True, imgs, gen_imgs, results_dir, epoch)
                 plots.labeled_distributions(self, True, X_train, y_train, results_dir, epoch)
+                plots.save_stats(self, results_dir, self.ks_stats, self.ks_pvals, self.ks_stats_summ, self.ks_pvals_summ, 'KS',  epochs)
+                plots.save_stats(self, results_dir, self.t_stats, self.t_pvals, self.t_stats_summ, self.t_pvals_summ, 'T-test',  epochs)
 
 if __name__ == '__main__':
     # wandb.init(project="my-test-project", entity="joanbotzev")
 
     epochs = 10000
-    batch_size = 64
+    batch_size = 12
     learning_rate = 0.0002
     # wandb.config = {
     #     "learning_rate": learning_rate,
