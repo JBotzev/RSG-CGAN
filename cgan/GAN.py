@@ -17,6 +17,9 @@ from scipy import stats
 from load import load_wind
 from load import load_solar
 import plots
+import FID
+import IS
+from keras.applications.inception_v3 import InceptionV3
 import wandb
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -33,18 +36,28 @@ class DE_GAN():
         self.img_cols = 24
         self.num_channels = 1
         self.img_shape = (self.img_rows, self.img_cols, self.num_channels)
-        self.latent_dim = 100
+        self.latent_dim = 300
         self.mean = 0
-        self.std = 0.5
-        self.learn_rate = 0.0001
+        self.std = 2
+        self.learn_rate = 0.002
         self.g_losses, self.d_losses, self.metric_l = [], [], []
         self.num_classes = 4
         self.ks_stats, self.ks_pvals = [[] for _ in range(self.num_classes)], [[] for _ in range(self.num_classes)]
         self.t_stats, self.t_pvals = [[] for _ in range(self.num_classes)], [[] for _ in range(self.num_classes)]
-        self.ks_stats_summ, self.ks_pvals_summ, self.t_stats_summ, self.t_pvals_summ = [], [], [], []
-        self.title = 'solar/real bi'
+        #total metrics
+        self.ks_stats_summ, self.ks_pvals_summ, self.t_stats_summ, \
+        self.t_pvals_summ, self.std_summ, self.std_real, self.bhat_summ, self.wasd_summ,\
+        self.mse_summ, self.fid, self.is_avg, self.is_std,\
+        self.is_avgR, self.is_stdR = [], [], [], [],[],[],[], [], [], [], [], [], [], []
+        self.data_std = 0
+        self.corr_diff = []
+        self.data_type = 'wind'
+        self.title = self.data_type + '/bi'
+        self.activation = 'sigmoid'
+        self.test = True
 
-        optimizer = Adam(self.learn_rate, 0.2)
+        optimizer = Adam(self.learn_rate, 0.5)
+        self.iv3 = InceptionV3(include_top=False, pooling='avg', input_shape=(299, 299, 3))
 
         # Build and compile the discriminator
         self.discriminator = self.build_discriminator()
@@ -86,7 +99,7 @@ class DE_GAN():
         model.add(Dense(1024))
         model.add(LeakyReLU(alpha=0.2))
         model.add(BatchNormalization(momentum=0.8))
-        model.add(Dense(np.prod(self.img_shape, ), activation='sigmoid'))
+        model.add(Dense(np.prod(self.img_shape, ), activation=self.activation))
         model.add(Reshape(self.img_shape))
 
         noise = Input(shape=(self.latent_dim,))
@@ -122,133 +135,162 @@ class DE_GAN():
         discriminator.summary()
         return discriminator
 
-    def train(self, X_train, y_train, epochs, batch_size=128, sample_interval=50):
-
-        # Load the dataset
-        # (X_train, y_train), (_, _) = mnist.load_data()
-
+    def train(self, X_train, y_train, X_test, y_test, epochs, batch_size=128, sample_interval=50):
         print('X TRAIN')
         print(X_train.shape)
-
         print('Y TRAIN')
         print(y_train.shape)
-
+        print('X TRAIN')
+        print(X_test.shape)
         # Configure input
-        # X_train = (X_train.astype(np.float32) - 127.5) / 127.5
-        X_train = np.expand_dims(X_train, axis=1)
-        y_train = y_train.reshape(-1, 1)
-
+        X_train_real = np.expand_dims(X_train, axis=1)
+        y_train_real = y_train.reshape(-1, 1)
+        X_test = np.expand_dims(X_test, axis=1)
+        y_test = y_test.reshape(-1, 1)
         # Adversarial ground truths
         valid = np.ones((batch_size, 1))
         fake = np.zeros((batch_size, 1))
+        half_batch = int(batch_size/2)
 
+        if self.test:
+            self.data_std = np.std(X_test)
+        else:
+            self.data_std = np.std(X_train)
         for epoch in range(epochs):
+            X_train = X_train_real
+            y_train = y_train_real
             # ---------------------
             #  Train Discriminator
             # ---------------------
             # Select a random half batch of images
+            #half batch
             idx = np.random.randint(0, X_train.shape[0], batch_size)
-
-            imgs, labels = X_train[idx], y_train[idx]
-
-            # print("idx shape: ", idx.shape, idx)
-            # print("imgs shape: ", imgs.shape)
-            # print("labels shape: ", labels.shape)
+            imgs = X_train[idx]
             # Sample noise as generator input
+            #half batch
             noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
-
-            # print(labels)
             # Generate a half batch of new images
             gen_imgs = self.generator.predict([noise])
-            # print("gen imgs ", gen_imgs.shape)
-
-            # print('final imgs ', imgs.shape)
-            # print('final labels ', labels.shape)
-            # print('final valid ', valid.shape)
             # Train the discriminator
+            # valid/fake[:half_batch]
             d_loss_real = self.discriminator.train_on_batch([imgs], valid)
             d_loss_fake = self.discriminator.train_on_batch([gen_imgs], fake)
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
-
             # ---------------------
             #  Train Generator
             # ---------------------
             # Train the generator
+            #noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
             g_loss = self.combined.train_on_batch([noise], valid)
-
             # Plot the progress
             metric = 100 * d_loss[1]
             print("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], metric, g_loss))
             self.g_losses.append(g_loss)
             self.d_losses.append(d_loss[0])
             self.metric_l.append(metric)
-            # self.w_losses.append(w_loss)
 
-            # Save distribution statistic
-            # KS statistic
-            gen_batch = gen_imgs.reshape(gen_imgs.shape[0] * gen_imgs.shape[2])
-            real_batch = imgs.reshape(imgs.shape[0] * imgs.shape[2])
-            (ks_stat, ks_pval) = stats.ks_2samp(real_batch[::batch_size], gen_batch[::batch_size])
-            self.ks_stats_summ.append(ks_stat)
-            self.ks_pvals_summ.append(ks_pval)
-            # T-test statistic
-            w0 = np.var(real_batch)
-            w1 = np.var(gen_batch)
-            var_prop = w1 / w0
-            # print('Proportion 0-1: ', w1/w0)
-            # print(len(real_batch[::batch_size]))
-            equal_vars = False
-            if 1 / 2 < var_prop < 2:
-                equal_vars = True
-            (t_stat, t_pval) = stats.ttest_ind(real_batch, gen_batch, equal_var=equal_vars)
-            self.t_stats_summ.append(t_stat)
-            self.t_pvals_summ.append(t_pval)
-            # if epoch % 20 == 0:
-            #     plots.record_stats(self, X_train, y_train)
-            # print(self.ks_stats)
+            new_batch_size = 32
+            if epoch % 20 == 0:
+                if self.test:
+                    idx = np.random.randint(0, X_test.shape[0], new_batch_size)
+                    imgs_new = X_test[idx]
+                else:
+                    idx = np.random.randint(0, X_train.shape[0], new_batch_size)
+                    imgs_new = X_train[idx]
+                noise = np.random.normal(self.mean, self.std, (new_batch_size, self.latent_dim))
+                gen_imgs_new = self.generator.predict([noise])
+                plots.record_summ_stats(self, imgs_new, gen_imgs_new)
+
             # If at save interval => save generated image samples
+            results_dir = ''
             if epoch % sample_interval == 0:
-                save = False
                 script_dir = os.path.dirname(__file__)
                 results_dir = os.path.join(script_dir,
-                                           'images/Decimal GAN/%s/%d-(%0.1f,%0.1f)-noise%d-batch%d-lr%0.5f-[256,512,1024,512,512,512] sigm/' % (
+                                           'images/Decimal GAN/%s/%d-(%0.1f,%0.1f)-noise%d-batch%d-lr%0.5f-act(%s)-test %s/' % (
                                            self.title, epochs - 1, self.mean, self.std, self.latent_dim, batch_size,
-                                           self.learn_rate))
+                                           self.learn_rate, self.activation,self.test))
                 if not os.path.isdir(results_dir):
                     os.makedirs(results_dir)
-                if epoch == epochs - 1:
-                    plots.stats_to_csv(self, results_dir)
-                    save = True
-                # Plot and save statisticis
+                # GENERATE IMAGES FOR TESTING
+                if self.test:
+                    X_train = X_test
+                    y_train = y_test
+                    idx = np.random.randint(0, X_test.shape[0], new_batch_size)
+                    imgs = X_test[idx]
+                    noise = np.random.normal(self.mean, self.std, (new_batch_size, self.latent_dim))
+                    gen_imgs = self.generator.predict([noise])
+                # Plot and save statistics
+                print('X size: ', X_train.shape)
+                # FOR TEST REPLACE IMGS with TEST IMGS
                 plots.generate_sample(self, imgs, results_dir, epoch)
                 plots.plot_loss(self, True, results_dir, epochs)
-                plots.distributions(self, True, imgs, gen_imgs, results_dir)
+                plots.distributions(self, True, imgs, gen_imgs, results_dir, self.data_type,epoch)
                 #plots.labeled_distributions(self, True, X_train, y_train, results_dir, epoch)
+                #statistics
                 plots.save_stats(self, results_dir, self.ks_stats, self.ks_pvals, self.ks_stats_summ,
                                  self.ks_pvals_summ, 'KS', epochs, False)
                 plots.save_stats(self, results_dir, self.t_stats, self.t_pvals, self.t_stats_summ, self.t_pvals_summ,
                                  'T-test', epochs, False)
+                #metrics
+                plots.is_fid(self, X_train, y_train, self.iv3)
+                metrics = [self.mse_summ, self.wasd_summ, self.fid]
+                labels = ['Mean Square Error','Wasserstain Distance', 'FID']
+                plots.metrics_plot(results_dir, metrics, labels, 'Batch Metrics', True)
+                plots.simple_plot(self, results_dir, self.std_summ, self.std_real, 'Standard Deviation Summary')
+                #plots.simple_plot(results_dir, self.fid, 'Fretched Inception Distance')
+                #AUTOCORRELATION EUCLIDEAN PAIRING
+                plots.autocorrelation(results_dir, gen_imgs, imgs)
+                print('Snapshot at: ', epoch)
 
+            if epoch == epochs-1:
+                # PRINT LAST METRICS FOR TABLE
+                ks_range = int(len(self.ks_pvals_summ) / 10)
+                ks_result = np.mean(self.ks_pvals_summ[-ks_range:-1])
+                best = [np.min(self.fid), np.min(self.mse_summ), np.min(self.wasd_summ), np.max(self.std_summ), np.min(self.ks_stats_summ), np.max(self.ks_pvals_summ)]
+                last = [self.metric_l[-1], self.fid[-1], self.mse_summ[-1], self.wasd_summ[-1], self.std_summ[-1], self.ks_stats_summ[-1], ks_result]
+
+                # BY MSE
+                index = self.mse_summ.index(np.min(self.mse_summ))
+                iteration = int(index * sample_interval)
+                stat_iter = int(index * sample_interval / 20)
+                by_mse = [self.metric_l[iteration], self.fid[index], self.mse_summ[index], self.wasd_summ[index],
+                          self.std_summ[index],
+                          self.ks_stats_summ[stat_iter], self.ks_pvals_summ[stat_iter]]
+                # BY FID
+                index = self.fid.index(np.min(self.fid))
+                iteration = int(index * sample_interval)
+                stat_iter = int(index * sample_interval / 20)
+                pval_record = np.mean(self.ks_pvals_summ[stat_iter - 20:stat_iter + 20])
+                kstat_record = np.mean(self.ks_stats_summ[stat_iter - 20:stat_iter + 20])
+                std_diff = np.abs(self.data_std - self.std_summ[index])
+                by_fid = [self.metric_l[iteration], self.fid[index], self.mse_summ[index], self.wasd_summ[index],
+                          self.std_summ[index], kstat_record, pval_record, self.corr_diff[index], std_diff]
+
+                # SAVE BEST / LAST / BEST by MSE / BEST by FID
+                np.savetxt(results_dir + 'Metrics best.csv', best, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'Metrics last.csv', last, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'Metrics by MSE.csv', by_mse, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'Metrics by FID.csv', by_fid, delimiter=",", fmt='%1.5f')
+                # SAVE ALL
+                np.savetxt(results_dir + 'zz Accuracy.csv', self.metric_l, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz FID.csv', self.fid, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz MSE.csv', self.mse_summ, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz WASD.csv', self.wasd_summ, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz STD.csv', self.std_summ, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz KS stat.csv', self.ks_stats_summ, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz KS pval.csv', self.ks_pvals_summ, delimiter=",", fmt='%1.5f')
+                print('Metrics output -----------------------')
+                print(results_dir)
 
 if __name__ == '__main__':
-    # wandb.init(project="my-test-project", entity="joanbotzev")
-
-    epochs = 10000
+    epochs = 50000
     batch_size = 64
-    learning_rate = 0.0002
-    # wandb.config = {
-    #     "learning_rate": learning_rate,
-    #     "epochs": epochs,
-    #     "batch_size": batch_size
-    # }
 
     sample_interval = (epochs) / 20
     X, y = load_solar()
-    # X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
 
     print('Data loaded !')
     cgan = DE_GAN()
-    cgan.train(X, y, epochs=epochs + 1, batch_size=batch_size, sample_interval=sample_interval)
-
-    # cgan.combined.fit(X_train, y_train, validation_data=(X_test, y_test))
-    # cgan.combined.fit(X_train, y_train, validation_data=(X_test, y_test), callbacks=[WandbCallback()])
+    cgan.train(X_train, y_train, X_test, y_test, epochs=epochs + 1, batch_size=batch_size, sample_interval=sample_interval)
+    print('Training finished')

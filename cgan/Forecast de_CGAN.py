@@ -19,6 +19,7 @@ from tensorflow.python.keras.layers import concatenate
 from load import load_wind, load_solar
 import plots
 import f_plots
+from keras.applications.inception_v3 import InceptionV3
 import wandb
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -35,22 +36,36 @@ class Forecast_de_CGAN():
         self.num_classes = 4
         self.num_channels = 1
         self.img_shape = (self.img_rows, self.img_cols, self.num_channels)
-        self.mean = 0.05
-        self.std = 1
-        self.learn_rate = 0.0005
+        self.mean = 0
+        self.std = 2
+        self.data_std = 0
+        self.learn_rate = 0.0002
         self.g_losses, self.d_losses, self.metric_l = [], [], []
         self.ks_stats, self.ks_pvals = [[] for _ in range(self.num_classes)], [[] for _ in range(self.num_classes)]
         self.t_stats, self.t_pvals = [[] for _ in range(self.num_classes)], [[] for _ in range(self.num_classes)]
         self.ks_stats_summ, self.ks_pvals_summ, self.t_stats_summ, self.t_pvals_summ = [], [], [], []
-        self.title = 'wind/bi'
-        self.training_days = 3  # number of previous days + the current one (for real cannot be 1)
+        # total metrics
+        self.ks_stats_summ, self.ks_pvals_summ, self.t_stats_summ, \
+        self.t_pvals_summ, self.std_summ, self.std_real, self.bhat_summ, self.wasd_summ, \
+        self.mse_summ, self.fid, self.is_avg, self.is_std, \
+        self.is_avgR, self.is_stdR = [], [], [], [], [], [], [], [], [], [], [], [], [], []
+        self.data_std = 0
+        self.corr_diff = []
+        self.data_type = 'solar'
+        self.title = self.data_type + '/bi'
+        self.activation = 'sigmoid'
+        self.test = True
+
+        #conditions and noise
+        self.training_days = 7  # number of previous days + the current one (for real cannot be 1)
         self.real_noise = False  # use real data for previous days
         if self.real_noise:
             self.latent_dim = (self.training_days-1) * 24
         else:
-            self.latent_dim = 100
+            self.latent_dim = 300
 
         optimizer = Adam(self.learn_rate, 0.5)
+        self.iv3 = InceptionV3(include_top=False, pooling='avg', input_shape=(299, 299, 3))
 
         # Build and compile the discriminator
         self.discriminator = self.build_discriminator()
@@ -104,11 +119,10 @@ class Forecast_de_CGAN():
         noise = Input(shape=(self.latent_dim,),)
         label = Input(shape=(self.training_days,),)
 
-        x = concatenate([noise, label])
+        x = concatenate([noise, label],axis=1)
         print('x = img ', x.shape)
         print('label ', label.shape)
         print('y ', y.shape)
-
         x = Dense(256)(x)
         x = LeakyReLU(alpha=0.2)(x)
         x = BatchNormalization(momentum=0.8)(x)
@@ -118,7 +132,8 @@ class Forecast_de_CGAN():
         x = Dense(1024)(x)
         x = LeakyReLU(alpha=0.2)(x)
         x = BatchNormalization(momentum=0.8)(x)
-        x = Dense(np.prod(self.img_shape, ), activation='tanh')(x)
+        x = Dense(np.prod(self.img_shape,))(x)
+        x = Activation(self.activation)(x)
         x = Reshape(self.img_shape)(x)
         #new
         # label_embedding = Flatten()(Embedding(self.num_classes, self.latent_dim, input_length=self.training_days)(label))
@@ -158,7 +173,8 @@ class Forecast_de_CGAN():
         x = LeakyReLU(alpha=0.2)(x)
         x = Dropout(0.4)(x)
         x = Flatten()(x)
-        x = Dense(1, activation='sigmoid')(x)
+        x = Dense(1)(x)
+        x = Activation('sigmoid')(x)
 
         # model = Sequential()
         # model.add(Dense(512, input_dim=np.prod(self.img_shape))(label))
@@ -172,7 +188,6 @@ class Forecast_de_CGAN():
         # model.add(LeakyReLU(alpha=0.2))
         # model.add(Dropout(0.4))
         # model.add(Dense(1, activation='sigmoid'))
-
 
         print('x after concat ', x.shape)
         #label_embedding = Flatten()(Embedding(self.num_classes, np.prod(self.img_shape))(label))
@@ -191,72 +206,63 @@ class Forecast_de_CGAN():
         discriminator.summary()
         return discriminator
 
-    def train(self, X_train, y_train, epochs, batch_size=128, sample_interval=50):
-
-        # Load the dataset
-        # (X_train, y_train), (_, _) = mnist.load_data()
-
+    def train(self, X_train, y_train, X_test, y_test, epochs, batch_size=128, sample_interval=50):
         print('X TRAIN')
         print(X_train.shape)
-        print('Y TRAIN')
-        print(y_train.shape)
-
+        print('X TEST')
+        print(X_test.shape)
         # Configure input
-        # X_train = (X_train.astype(np.float32) - 127.5) / 127.5
-        X_train = np.expand_dims(X_train, axis=1)
-        y_train_td = y_train.reshape(-1, self.training_days)
-        print(y_train_td.shape)
+        X_train_real = np.expand_dims(X_train, axis=1)
+        # y_train_td = y_train.reshape(-1, self.training_days)
+        y_train_real = y_train
+        X_test = np.expand_dims(X_test, axis=1)
+        y_test = y_test.reshape(-1, 1)
         # Adversarial ground truths
         valid = np.ones((batch_size, 1))
         fake = np.zeros((batch_size, 1))
-        half_batch = int(batch_size / 2)
+        # half_batch = int(batch_size / 2)
+        if self.test:
+            self.data_std = np.std(X_test)
+        else:
+            self.data_std = np.std(X_train)
         for epoch in range(epochs):
+            X_train = X_train_real
+            y_train = y_train_real
             # ---------------------
             #  Train Discriminator
             # ---------------------
             # Select a random half batch of images
-            idx = np.random.randint(0, X_train.shape[0], half_batch)
+            idx = np.random.randint(0, X_train.shape[0], batch_size)
             imgs = X_train[idx]
             if self.real_noise:
                 noise = self.getNoise(idx, X_train)
             else:
-                noise = np.random.normal(self.mean, self.std, (half_batch, self.latent_dim))
+                noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
 
-            # sns.kdeplot(noise[0])
-            # plt.show()
             label_list = []
             for i in reversed(range(self.training_days)):
                 label_list.append(y_train[idx-i])
-            #     print('idx-i ', idx-i)
-            # print('list size ',len(label_list))
-            multi_labels = np.array(label_list).reshape(half_batch, self.training_days)
-            # print(labels.shape)
-            # print(multi_labels.shape)
+            multi_labels = np.array(label_list).reshape(batch_size, self.training_days)
             # Generate a half batch of new images
             gen_imgs = self.generator.predict([noise, multi_labels])
-            # print("gen imgs ", gen_imgs.shape)
-
-            # print('final imgs ', imgs.shape)
-            # print('final labels ', labels.shape)
-            # print('final valid ', valid.shape)
             # Train the discriminator
-            d_loss_real = self.discriminator.train_on_batch([imgs, multi_labels], valid[:half_batch])
-            d_loss_fake = self.discriminator.train_on_batch([gen_imgs, multi_labels], fake[:half_batch])
+            d_loss_real = self.discriminator.train_on_batch([imgs, multi_labels], valid)
+            d_loss_fake = self.discriminator.train_on_batch([gen_imgs, multi_labels], fake)
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
-
             # ---------------------
             #  Train Generator
             # ---------------------
             # Condition on labels
-            sampled_labels = []
-            for i in range(self.training_days):
-                sampled_labels.append(np.random.randint(0, 4, batch_size))
-            sampled_labels = np.array(sampled_labels).reshape(batch_size, self.training_days)
-            # print(sampled_labels.shape)
-            # print(sampled_labels)
+            idx = np.random.randint(0, X_train.shape[0], batch_size)
+            label_list = []
+            for i in reversed(range(self.training_days)):
+                label_list.append(y_train[idx - i])
+
+            sample_multi_labels = np.array(label_list).reshape(batch_size, self.training_days)
             # Train the generator
+            # print('ml 1 ', multi_labels)
             noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
-            g_loss = self.combined.train_on_batch([noise, sampled_labels], valid)
+            g_loss = self.combined.train_on_batch([noise, sample_multi_labels], valid)
 
             # Plot the progress
             metric = 100*d_loss[1]
@@ -264,86 +270,148 @@ class Forecast_de_CGAN():
             self.g_losses.append(g_loss)
             self.d_losses.append(d_loss[0])
             self.metric_l.append(metric)
-            # self.w_losses.append(w_loss)
 
-            # print(gen_imgs.shape)
-            # print(imgs.shape)
             # Save distribution statistic
             # KS statistic
-            gen_batch = gen_imgs.reshape(gen_imgs.shape[0]*gen_imgs.shape[2])
-            real_batch = imgs.reshape(imgs.shape[0]*imgs.shape[2])
-            # print('size ', len(real_batch))
-            # print('size reduced', len(real_batch[::5]))
-            (ks_stat, ks_pval) = stats.ks_2samp(real_batch[::5], gen_batch[::5])
-            self.ks_stats_summ.append(ks_stat)
-            self.ks_pvals_summ.append(ks_pval)
-            # T-test statistic
-            w0 = np.var(real_batch)
-            w1 = np.var(gen_batch)
-            var_prop = w1/w0
-            # print('Proportion 0-1: ', w1/w0)
-            # print(len(real_batch[::batch_size]))
-            equal_vars = False
-            if 1/2 < var_prop < 2:
-                equal_vars = True
-            (t_stat, t_pval) = stats.ttest_ind(real_batch, gen_batch,equal_var=equal_vars)
-            self.t_stats_summ.append(t_stat)
-            self.t_pvals_summ.append(t_pval)
-            # if epoch % 20 == 0:
-            #     plots.record_stats(self, X_train, y_train)
-            # print(self.ks_stats)
+            new_batch_size = 32
+            if epoch % 20 == 0:
+                if self.test:
+                    X_train = X_test
+                    y_train = y_test
+                    idx = np.random.randint(0, X_train.shape[0], new_batch_size)
+                    if self.real_noise:
+                        noise_z = self.getNoise(idx, X_train)
+                    else:
+                        noise_z = np.random.normal(self.mean, self.std, (new_batch_size, self.latent_dim))
+                    label_list_z = []
+                    for i in reversed(range(self.training_days)):
+                        label_list_z.append(y_train[idx - i])
+                    multi_labels_z = np.array(label_list_z).reshape(new_batch_size, self.training_days)
+                    imgs = X_train[idx]
+                    gen_imgs = self.generator.predict([noise_z, multi_labels_z])
+                plots.record_summ_stats(self, imgs[:new_batch_size], gen_imgs[:new_batch_size])
+
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 print('Saving plots and data . . .')
-                save = False
                 script_dir = os.path.dirname(__file__)
-                results_dir = os.path.join(script_dir, 'images/Forecast de_CGAN/%s/%d-(%0.1f,%0.1f)-noise%d real(%s)-batch%d-lr%0.4f-days%d-[256,512,1024,512,512,512] half batch test/' %(self.title, epochs-1,self.mean, self.std,self.latent_dim, self.real_noise, batch_size,self.learn_rate,self.training_days))
+                results_dir = os.path.join(script_dir, 'images/Forecast de_CGAN/%s/%d-(%0.1f,%0.1f)-noise%d real(%s)-batch%d-lr%0.4f-days%d-%s-test %s x2 fixed batch size/'
+                %(self.title, epochs-1,self.mean, self.std,self.latent_dim, self.real_noise, batch_size,self.learn_rate,self.training_days, self.activation,self.test))
                 if not os.path.isdir(results_dir):
                     os.makedirs(results_dir)
-                if epoch == epochs-1:
-                    plots.stats_to_csv(self, results_dir)
-                    save = True
 
-                # Plot and save statisticis
-                f_plots.forecast_samples(self, X_train, y_train, results_dir, epoch)
-                #plots.sample_plots(self, True, results_dir, epoch,X_train,y_train)
-                # plots.labeled_distributions(self, True, X_train, y_train, results_dir, epoch)
+                # GENERATE IMAGES FOR TESTING
+                if self.test:
+                    X_train = X_test
+                    y_train = y_test
+                    print('test ',X_train.shape)
+                    idx = np.random.randint(0, X_train.shape[0], new_batch_size)
+                    if self.real_noise:
+                        noise_z = self.getNoise(idx, X_train)
+                    else:
+                        noise_z = np.random.normal(self.mean, self.std, (new_batch_size, self.latent_dim))
+                    label_list_z = []
+                    for i in reversed(range(self.training_days)):
+                        print(y_train[idx-i])
+                        label_list_z.append(y_train[idx - i])
+                    multi_labels_z = np.array(label_list_z).reshape(new_batch_size, self.training_days)
+                    imgs = X_train[idx]
+                    gen_imgs = self.generator.predict([noise_z, multi_labels_z])
+                    print('SAMPLE INTERVAL ', imgs.shape, ' ',gen_imgs.shape)
+                # STANDARD PLOTS
+                if self.training_days > 1:
+                    f_plots.forecast_samples(self, X_train, y_train, results_dir, epoch)
+                else:
+                    plots.sample_plots(self, True, results_dir, epoch, X_train, y_train)
+                imgs = imgs[:new_batch_size]
+                gen_imgs = gen_imgs[:new_batch_size]
                 plots.plot_loss(self, True, results_dir, epochs)
-                plots.distributions(self, True, imgs, gen_imgs, results_dir)
+                print('DISTRIBUTION IMGS ', imgs.shape)
+                print('GEN imgs ', gen_imgs.shape)
+                plots.distributions(self, True, imgs, gen_imgs, results_dir, self.data_type,epoch)
+                # STATISTICS
                 f_plots.plot_summary_tests(results_dir, self.ks_stats_summ, self.ks_pvals_summ, 'KS',  epochs)
                 f_plots.plot_summary_tests(results_dir, self.t_stats_summ, self.t_pvals_summ, 'T-test',  epochs)
+                # METRICS SUMMARY
+                f_plots.is_fid(self, X_train, y_train, self.iv3)
+                metrics = [self.mse_summ, self.wasd_summ, self.fid]
+                labels = ['Mean Square Error', 'Wasserstain Distance', 'FID']
+                plots.metrics_plot(results_dir, metrics, labels, 'Batch Metrics', True)
+                # OTHER
+                plots.simple_plot(self, results_dir, self.std_summ, self.std_real, 'Standard Deviation Summary')
+                plots.autocorrelation(results_dir, gen_imgs, imgs)
+                # FID and IS
+                #in_score = [self.is_avg, self.is_std, self.is_avgR, self.is_stdR]
+                # labels_IS = ['IS gen', 'Std gen', 'IS real', 'Std real']
+                # plots.metrics_plot_IS(results_dir, in_score, 'Inception Score')
+
+            if epoch == epochs - 1:
+                # PRINT LAST METRICS FOR TABLE
+                print('Metrics output -----------------------')
+                ks_range = int(len(self.ks_pvals_summ) / 10)
+                ks_result = np.mean(self.ks_pvals_summ[-ks_range:-1])
+                best = [np.min(self.fid), np.min(self.mse_summ), np.min(self.wasd_summ),
+                        np.max(self.std_summ), np.min(self.ks_stats_summ), np.max(self.ks_pvals_summ)]
+                last = [self.metric_l[-1], self.fid[-1], self.mse_summ[-1], self.wasd_summ[-1], self.std_summ[-1],
+                        self.ks_stats_summ[-1], ks_result]
+                # BY MSE
+                index = self.mse_summ.index(np.min(self.mse_summ))
+                iteration = int(index * sample_interval)
+                stat_iter = int(index * sample_interval / 20)
+                by_mse = [self.metric_l[iteration], self.fid[index], self.mse_summ[index], self.wasd_summ[index],
+                          self.std_summ[index],
+                          self.ks_stats_summ[stat_iter], self.ks_pvals_summ[stat_iter]]
+                # BY FID
+                index = self.fid.index(np.min(self.fid))
+                iteration = int(index * sample_interval)
+                stat_iter = int(index * sample_interval / 20)
+                pval_record = np.mean(self.ks_pvals_summ[stat_iter - 50:stat_iter + 50])
+                kstat_record = np.mean(self.ks_stats_summ[stat_iter - 50:stat_iter + 50])
+                std_diff = np.abs(self.data_std - self.std_summ[index])
+                by_fid = [self.metric_l[iteration], self.fid[index], self.mse_summ[index], self.wasd_summ[index],
+                          self.std_summ[index], kstat_record, pval_record, self.corr_diff[index], std_diff]
+
+                # SAVE BEST / LAST / BEST by MSE / BEST by FID
+                np.savetxt(results_dir + 'Metrics best.csv', best, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'Metrics last.csv', last, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'Metrics by MSE.csv', by_mse, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'Metrics by FID.csv', by_fid, delimiter=",", fmt='%1.5f')
+                # SAVE ALL
+                np.savetxt(results_dir + 'zz Accuracy.csv', self.metric_l, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz FID.csv', self.fid, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz MSE.csv', self.mse_summ, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz WASD.csv', self.wasd_summ, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz STD.csv', self.std_summ, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz KS stat.csv', self.ks_stats_summ, delimiter=",", fmt='%1.5f')
+                np.savetxt(results_dir + 'zz KS pval.csv', self.ks_pvals_summ, delimiter=",", fmt='%1.5f')
+                print('Metrics output -----------------------')
+                print(results_dir)
 
     def getNoise(self, idx, X_train):
+        # print('idx ',idx.shape, idx)
         prev_days = []
         for i in range(self.training_days - 1, 0, -1):
             prev_days.append(X_train[idx - i])
-            # prev days = []
         prev_days = np.array(prev_days)
-        # print('training days ', prev_days.shape[0])
-        # print('batch ',prev_days.shape[1])
-        # print('prev days 1', prev_days[0])
+        # print('prev days ', prev_days.shape)
         merged = np.column_stack(prev_days)
-        # print('merged ',merged.shape,merged[1])
-        # print('actual', X_train[idx[1]])
         noise = []
-        for i in range(batch_size):
+        # print('merged ',merged)
+        for i in range(idx.shape[0]):
+            # print('merged i:',i, ' ',merged[i])
             noise.append(np.concatenate(merged[i]))
         noise = np.array(noise)
-            # print('noise ', noise.shape)
-            # print("idx shape: ", idx.shape, idx)
-            # print("imgs shape: ", imgs.shape)
-            # print("labels shape: ", labels.shape)
-            # Sample noise as generator input
 
         return noise
 
 
 if __name__ == '__main__':
-    epochs = 10000
+    epochs = 80000
     batch_size = 64
     sample_interval = (epochs) / 20
-    X, y = load_wind()
+    X, y = load_solar()
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42, shuffle=False, stratify=None)
+
     cgan = Forecast_de_CGAN()
-    cgan.train(X, y, epochs=epochs+1, batch_size=batch_size, sample_interval=sample_interval)
+    cgan.train(X_train, y_train, X_test, y_test, epochs=epochs+1, batch_size=batch_size, sample_interval=sample_interval)
     print("Training completed !")
-    #cgan.combined.fit(X_train, y_train, validation_data=(X_test, y_test), callbacks=[WandbCallback()])

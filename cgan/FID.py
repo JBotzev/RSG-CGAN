@@ -42,28 +42,28 @@ def calculate_fid(model, images1, images2):
     fid = ssdiff + trace(sigma1 + sigma2 - 2.0 * covmean)
     return fid
 
-
-# prepare the inception v3 model
-model = InceptionV3(include_top=False, pooling='avg', input_shape=(299, 299, 3))
-# define two fake collections of images
-images1 = randint(0, 255, 10 * 32 * 32 * 3)
-images1 = images1.reshape((10, 32, 32, 3))
-images2 = randint(0, 255, 10 * 32 * 32 * 3)
-images2 = images2.reshape((10, 32, 32, 3))
-print('Prepared', images1.shape, images2.shape)
-# convert integer to floating point values
-images1 = images1.astype('float32')
-images2 = images2.astype('float32')
-# resize images
-images1 = scale_images(images1, (299, 299, 3))
-images2 = scale_images(images2, (299, 299, 3))
-print('Scaled', images1.shape, images2.shape)
-# pre-process images
-images1 = preprocess_input(images1)
-images2 = preprocess_input(images2)
-# fid between images1 and images1
-fid = calculate_fid(model, images1, images1)
-print('FID (same): %.3f' % fid)
-# fid between images1 and images2
-fid = calculate_fid(model, images1, images2)
-print('FID (different): %.3f' % fid)
+#
+# # prepare the inception v3 model
+# model = InceptionV3(include_top=False, pooling='avg', input_shape=(299, 299, 3))
+# # define two fake collections of images
+# images1 = randint(0, 255, 10 * 32 * 32 * 3)
+# images1 = images1.reshape((10, 32, 32, 3))
+# images2 = randint(0, 255, 10 * 32 * 32 * 3)
+# images2 = images2.reshape((10, 32, 32, 3))
+# print('Prepared', images1.shape, images2.shape)
+# # convert integer to floating point values
+# images1 = images1.astype('float32')
+# images2 = images2.astype('float32')
+# # resize images
+# images1 = scale_images(images1, (299, 299, 3))
+# images2 = scale_images(images2, (299, 299, 3))
+# print('Scaled', images1.shape, images2.shape)
+# # pre-process images
+# images1 = preprocess_input(images1)
+# images2 = preprocess_input(images2)
+# # fid between images1 and images1
+# fid = calculate_fid(model, images1, images1)
+# print('FID (same): %.3f' % fid)
+# # fid between images1 and images2
+# fid = calculate_fid(model, images1, images2)
+# print('FID (different): %.3f' % fid)

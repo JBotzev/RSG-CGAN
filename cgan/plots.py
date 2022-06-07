@@ -3,16 +3,15 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
 import pandas as pd
-from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import mean_squared_error
 import math
 from scipy.stats import wasserstein_distance
+import statsmodels.api as sm
+import FID
+import IS
+from keras.applications.inception_v3 import InceptionV3
 
-import statistics
-from keras.utils.vis_utils import plot_model
-import os
-
-
+batch_size = 32 #influencing conditional stats, distributions, metrics
 def sample_plots(self, save, dir, epoch, X_train, y_train, use_decimal=True):
     noise = np.random.normal(self.mean, self.std, (4,self.latent_dim))
     decimal_labels = np.arange(0, 4).reshape(-1, 1)
@@ -51,7 +50,7 @@ def sample_plots(self, save, dir, epoch, X_train, y_train, use_decimal=True):
     fig.tight_layout()
 
     if save:
-        plt.savefig(dir + "Samples %d.png" %epoch)
+        plt.savefig(dir + "Z Samples %d.png" %epoch)
         self.combined.save(dir + 'model.h5')
     plt.close()
 
@@ -66,7 +65,7 @@ def plot_loss(self, save, dir, epoch):
     plt.legend(['Generator loss','Discriminator loss'])
 
     if save:
-        plt.savefig(dir + "Loss %d.png"%epoch)
+        plt.savefig(dir + "Loss.png")
     # plt.savefig("images/%d" % epoch)
     # plt.show()
     plt.close()
@@ -76,46 +75,85 @@ def plot_loss(self, save, dir, epoch):
     plt.ylabel('Accuracy')
     plt.title("Discriminator Accuracy")
     if save:
-        plt.savefig(dir + "Metric %d.png"%epoch)
+        plt.savefig(dir + "Discriminator Accuracy.png")
     plt.close()
 
+
+def is_fid(self,X_train,y_train,model):
+    batch_size = 100
+    idx = np.random.randint(0, X_train.shape[0], batch_size)
+    imgs, labels = X_train[idx], y_train[idx]
+
+    noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
+    gen_imgs = self.generator.predict([noise, labels])
+    print('generated images')
+
+    images1 = FID.scale_images(imgs * 255, (299, 299, 3))
+    images2 = FID.scale_images(gen_imgs * 255, (299, 299, 3))
+    print('scaled')
+    #calculate FID
+    images1 = FID.preprocess_input(images1)
+    images2 = FID.preprocess_input(images2)
+    print('FID preprocessed')
+    fid_score = FID.calculate_fid(model, images1, images2)
+    self.fid.append(fid_score)
+    print('FID (different): %.3f' % fid_score)
+
+
 # CHECK AND FIX SIZE OF T TEST SUMMARY < 30
-def distributions(self,save, imgs, gen_imgs, dir, title):
-    plt.figure()
-    gen_imgs = gen_imgs.reshape((gen_imgs.shape[0]*gen_imgs.shape[2]))
-    imgs = imgs.reshape((imgs.shape[0]*imgs.shape[2]))
+def distributions(self,save, imgs, gen_imgs, dir, title,epoch):
+    # print('kde gen ', gen_imgs.shape)
+    # print('kde real ', imgs.shape)
 
     # SUMMARY METRICS ==============================================================================
+    # MSE
+    gen_imgs_sq = gen_imgs.reshape(gen_imgs.shape[0], 24)
+    imgs_sq = imgs.reshape(imgs.shape[0], 24)
+
+    #autocorrelation difference
+    corrs = []
+    for gen_img in gen_imgs_sq:
+        for real_img in imgs_sq:
+            gen_corr = sm.tsa.acf(gen_img)
+            real_corr = sm.tsa.acf(real_img)
+            corrs.append(mean_squared_error(gen_corr, real_corr))
+    self.corr_diff.append(np.mean(corrs))
+
+    gen_imgs = gen_imgs_sq.flatten()
+    imgs = imgs_sq.flatten()
+    print('gen ',gen_imgs.shape)
+    print('real ',imgs.shape)
+    self.mse_summ.append(mean_squared_error(gen_imgs, imgs))
     #STD
     self.std_summ.append(np.std(gen_imgs))
+    self.std_real.append(np.std(imgs))
     #BATCHARAYA
-    self.bhat_summ.append(-bhattacharyya(gen_imgs, imgs))
+    # self.bhat_summ.append(-bhattacharyya(gen_imgs, imgs))
     #Wasserstein D
     self.wasd_summ.append(wasserstein_distance(gen_imgs, imgs))
-    #MSE
-    self.mse_summ.append(mean_squared_error(gen_imgs, imgs))
     # print('new shape ', gen_imgs.shape)
+    plt.figure()
     sns.kdeplot(gen_imgs)
     sns.kdeplot(imgs)
-    # sns.displot(imgs[0], kde='True')
+    plt.xlabel('Power Generated (MW)')
     plt.title("Batch Distribution")
-    plt.legend(['Generated','Real'])
+    plt.legend(['Generated', 'Real'])
     if save:
-        plt.savefig(dir + "Batch Distribution.png")
+        plt.savefig(dir + "Z Batch Distribution %d.png" % epoch)
     # plt.show()
 
     plt.figure()
-    sns.kdeplot(gen_imgs,cumulative=True)
-    sns.kdeplot(imgs,cumulative=True)
-    plt.xlabel(title + '(MW)')
+    sns.kdeplot(gen_imgs, cumulative=True)
+    sns.kdeplot(imgs, cumulative=True, x=title + '(MW)')
     plt.ylabel('CDF')
-    plt.title(title + "Batch CDF")
+    plt.title(title + " batch CDF")
     plt.legend(['Generated', 'Real'])
+    if save:
+        plt.savefig(dir + "Z Batch CDF %d.png" % epoch)
     plt.close()
 
 
 def labeled_distributions(self,save, X_train, y_train, dir, epoch, title):
-    batch_size = 32
     # print('LABELED DISTRIBUTIONS')
     # print(X_train.shape[0])
     gen_batch_l = []
@@ -146,17 +184,17 @@ def labeled_distributions(self,save, X_train, y_train, dir, epoch, title):
     cnt = 0
     for k in range(r):
         for j in range(c):
-            sns.kdeplot(gen_batch_l[cnt], ax=axis[k][j])
+            sns.kdeplot(gen_batch_l[cnt], ax=axis[k][j], x=title + '(MW)')
             sns.kdeplot(real_batch_l[cnt], ax=axis[k][j])
-            axis[k,j].set_title("Condition: %d" % cnt)
+            axis[k,j].set_title("Condition %d" % cnt)
             axis[k,j].legend(['Generated','Real'])
             cnt += 1
-    plt.xlabel(title + '(MW)')
+            axis[k,j].set_xlabel(title + '(MW)')
     fig.suptitle('Distributions')
     fig.tight_layout()
 
     if save:
-        plt.savefig(dir + "Distributions %d.png"%(epoch))
+        plt.savefig(dir + "Z Distributions %d.png"%(epoch))
 
     # CDF
     r, c = (2, 2)
@@ -166,7 +204,7 @@ def labeled_distributions(self,save, X_train, y_train, dir, epoch, title):
         for j in range(c):
             sns.kdeplot(gen_batch_l[cnt], ax=axis1[k][j], cumulative=True)
             sns.kdeplot(real_batch_l[cnt], ax=axis1[k][j], cumulative=True)
-            axis1[k,j].set_title("%d" % cnt)
+            axis1[k,j].set_title("Condition %d" % cnt)
             axis1[k,j].legend(['Generated','Real'])
             cnt += 1
     figa.suptitle('CDFs')
@@ -178,13 +216,14 @@ def labeled_distributions(self,save, X_train, y_train, dir, epoch, title):
     plt.close()
 
 
-def record_stats(self, X_train, y_train):
-    batch_size = 32
+def record_cond_stats(self, X_train, y_train):
     noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
     # print('LABELED DISTRIBUTIONS')
     # print(X_train.shape[0])
     gen_batch_l = []
     real_batch_l = []
+    self.cond_histo_g = []
+    self.cond_histo_r = []
     for i in range(self.num_classes):
         real_batch = []
         labels = np.full(shape=batch_size,fill_value=i,dtype=np.int)
@@ -202,7 +241,8 @@ def record_stats(self, X_train, y_train):
         real_batch_arr = real_batch.reshape(real_batch.shape[0]*real_batch.shape[2])
         gen_batch_l.append(gen_batch_arr)
         real_batch_l.append(real_batch_arr)
-
+        self.cond_histo_g.append(np.sum(gen_batch_arr))
+        self.cond_histo_r.append(np.sum(real_batch_arr))
         # KS statistic
         # print(len(real_batch))
         (ks_stat, ks_pval) = stats.ks_2samp(real_batch_arr, gen_batch_arr)
@@ -219,11 +259,12 @@ def record_stats(self, X_train, y_train):
         (t_stat, t_pval) = stats.ttest_ind(real_batch_arr, gen_batch_arr,equal_var=equal_vars)
         self.t_stats[i].append(t_stat)
         self.t_pvals[i].append(t_pval)
-
         # again add list in DECGAN for each label appen
         # EVALUATION METRICS
-        self.mse[i].append(mean_metrics(gen_batch,real_batch)[0])
-        self.std_cond[i].append(np.std(gen_batch_arr))
+        # real_batch = np.squeeze(real_batch)
+        # gen_batch = np.squeeze(gen_batch)
+        # self.mse[i].append(mean_metrics(gen_batch,real_batch)[0])
+        # self.std_cond[i].append(np.std(gen_batch_arr))
         #concat batches
         # conc = np.concatenate((gen_batch_arr,real_batch_arr))
         # print(conc)
@@ -233,52 +274,28 @@ def record_stats(self, X_train, y_train):
         # self.mmd_cond[i].append(mmd_val)
         # self.ssim[i].append(mean_metrics(gen_batch,real_batch)[1])
 
-def mean_metrics(gen_batch, real_batch):
-    # print('batch ',gen_batch.shape, gen_batch)
-    mse = []
-    ssim = []
-    for i in range(len(gen_batch)):
-        gen_img = gen_batch[i][0].reshape(24)
-        real_img = real_batch[i][0]
-        # print('img ',gen_img.shape, gen_img)
-        # print('img r ', real_img.shape, real_img)
-        mse.append(mean_squared_error(real_img, gen_img))
+# Save distribution statistic
+def record_summ_stats(self, imgs, gen_imgs):
+            # KS statistic
+            print('Statistics size: ', imgs.shape[0])
+            gen_batch = gen_imgs.reshape(gen_imgs.shape[0] * gen_imgs.shape[2])
+            real_batch = imgs.reshape(imgs.shape[0] * imgs.shape[2])
+            (ks_stat, ks_pval) = stats.ks_2samp(real_batch, gen_batch)
+            self.ks_stats_summ.append(ks_stat)
+            self.ks_pvals_summ.append(ks_pval)
+            # T-test statistic
+            w0 = np.var(real_batch)
+            w1 = np.var(gen_batch)
+            var_prop = w1 / w0
+            # print('Proportion 0-1: ', w1/w0)
+            # print(len(real_batch[::batch_size]))
+            equal_vars = False
+            if 1 / 2 < var_prop < 2:
+                equal_vars = True
+            (t_stat, t_pval) = stats.ttest_ind(real_batch, gen_batch, equal_var=equal_vars)
+            self.t_stats_summ.append(t_stat)
+            self.t_pvals_summ.append(t_pval)
 
-        #ssim.append(ssim(real_img, gen_img, data_range=gen_img.max() - gen_img.min()))
-
-    return [np.mean(mse)]
-
-def metrics_plots_conditioned(dir,  metric, title):
-    plt.figure()
-    r, c = (2, 2)
-    fig, axis = plt.subplots(r, c)
-    cnt = 0
-    for i in range(r):
-        for j in range(c):
-            axis[i, j].plot(metric[cnt])
-            axis[i, j].set_title("Condition: %d" % cnt)
-            axis[i, j].set_xlabel('Iterations')
-            axis[i, j].set_ylabel(title, color='blue')
-            cnt += 1
-    fig.suptitle(title)
-    fig.tight_layout()
-    plt.savefig(dir + "%s.png" % (title))
-    plt.close()
-
-def metrics_plot(dir, metrics, labels):
-    fig, axis = plt.subplots()
-    axis2 = axis.twinx()
-    for i in range(len(metrics)):
-        if i == 1:
-            axis.plot(metrics[i], label=labels[i], color='g')
-            axis.set_ylabel('Bhattacharya Values',color='g')
-        else:
-            axis2.plot(metrics[i], label=labels[i])
-            axis2.set_ylabel('Metric Values')
-    plt.xlabel('Iteration')
-    plt.title('Batch Metrics')
-    fig.legend()
-    plt.savefig(dir + "Batch Metrics.png")
 
 def save_stats(self, directory, stats, pvals, stats_summ, pvals_summ, title, epoch, save_labeled=True):
     if save_labeled:
@@ -325,48 +342,126 @@ def stats_to_csv(self, results_dir):
     df.to_csv(results_dir + "T test.csv", index=False)
 
 def generate_sample(self, imgs, dir,epoch):
-    noise = np.random.normal(self.mean, self.std, (1, self.latent_dim))
+    noise = np.random.normal(self.mean, self.std, (batch_size, self.latent_dim))
     gen_imgs = self.generator.predict([noise])
-    # print(gen_imgs)
-    # print(gen_imgs.shape)
-    print(imgs[0])
-    print(imgs.shape)
-    plt.plot(gen_imgs[0][0])
-    plt.plot(imgs[0][0])
+    real = np.squeeze(imgs)
+    gen = np.squeeze(gen_imgs)
+    real, gen = get_closest_euclidean(real,gen)
+    plt.figure()
+    plt.plot(gen)
+    plt.plot(real)
     plt.xlabel('Hours')
     plt.ylabel('MW Power Generated')
     plt.legend(['Generated','Real'])
     plt.title("Generated Sample")
-    plt.savefig(dir + "Sample %d.png" % epoch)
-
-def simple_plot(dir, array, title):
-    plt.figure()
-    plt.plot(array)
-    plt.xlabel('Iterations')
-    plt.ylabel('Value')
-    plt.title(title)
-    plt.savefig(dir + title + ".png")
+    plt.savefig(dir + "Z Sample %d.png" % epoch)
 
 def autocorrelation(dir, gen, real):
     plt.figure()
-    print(gen.shape)
-    gen = gen.reshape(24)
-    print(real.shape)
+    real = np.squeeze(real)
+    gen = np.squeeze(gen)
     # auto_corr_gen = np.correlate(gen, gen, mode="full")
     # auto_corr_real = np.correlate(real, real, mode="full")
     # Creating Autocorrelation plot
-    auto_corr_gen = acf(gen)
+    # Creating Autocorrelation plot
+    real,gen = get_closest_euclidean(real,gen)
     auto_corr_real = acf(real)
+    auto_corr_gen = acf(gen)
 
-    plt.plot(auto_corr_gen)
-    plt.plot(auto_corr_real)
-    plt.xlabel('Time (Hours)')
-    plt.ylabel('Auto-corr Coefficients')
-    plt.legend(['Generated','Real'])
-    plt.title("Autocorrelation")
+    fig, (ax1, ax2) = plt.subplots(2)
+    ax2.plot(auto_corr_gen)
+    ax2.plot(auto_corr_real)
+    ax2.set_title('Autocorrelation')
+    ax2.set_xlabel('Lags')
+    ax2.set_ylabel('Coefficients')
+    ax2.legend(['Generated','Real'])
+    ax1.plot(gen)
+    ax1.plot(real)
+    ax1.set_title('Samples')
+    ax1.set_xlabel('Hours')
+    ax1.set_ylabel('Generated (MW)')
+    ax1.legend(['Generated','Real'])
+    fig.tight_layout()
     plt.savefig(dir + "Autocorrelation.png")
 
+# def mean_metrics(gen_batch, real_batch):
+#     mse = []
+#     gen_batch = gen_batch.reshape(gen_batch.shape[0], 24)
+#     real_batch = real_batch.reshape(real_batch.shape[0], 24)
+#
+#     for i in range(len(gen_batch)):
+#         gen_img = gen_batch[i]
+#         real_img = real_batch[i]
+#         # print('img ',gen_img.shape, gen_img)
+#         # print('img r ', real_img.shape, real_img)
+#         mse.append(mean_squared_error(real_img, gen_img))
+#
+#         #ssim.append(ssim(real_img, gen_img, data_range=gen_img.max() - gen_img.min()))
+#
+#     return [np.mean(mse)]
 
+def metrics_plots_conditioned(dir,  metric, title):
+    plt.figure()
+    r, c = (2, 2)
+    fig, axis = plt.subplots(r, c)
+    cnt = 0
+    for i in range(r):
+        for j in range(c):
+            axis[i, j].plot(metric[cnt])
+            axis[i, j].set_title("Condition: %d" % cnt)
+            axis[i, j].set_xlabel('Iterations')
+            axis[i, j].set_ylabel(title, color='blue')
+            cnt += 1
+    fig.suptitle(title)
+    fig.tight_layout()
+    plt.savefig(dir + "%s.png" % (title))
+    plt.close()
+
+def metrics_plot(dir, metrics, labels, title, second_axis):
+    fig, axis = plt.subplots()
+    colors = ['r','g','b','orange']
+    if second_axis == True:
+        axis2 = axis.twinx()
+    for i in range(len(metrics)):
+        if i >= len(metrics)-1 and second_axis == True:
+            axis2.plot(metrics[i], label=labels[i],color=colors[i])
+            axis2.set_ylabel('FID')
+        else:
+            axis.plot(metrics[i], label=labels[i],color=colors[i])
+            if second_axis == True:
+                axis.set_ylabel('WD \ MSE')
+            else:
+                plt.ylabel('Metric Values')
+    axis.set_xlabel('Iteration')
+    plt.title(title)
+    fig.legend()
+    plt.savefig(dir + title + ".png")
+
+def simple_plot(self, dir, gen, real, title):
+    plt.figure()
+    plt.plot(gen)
+    plt.plot(real)
+    plt.axhline(y=self.data_std, color='r', linestyle='-')
+    plt.xlabel('Iterations')
+    plt.ylabel('Value')
+    plt.legend(['Generated','Real Batch','Full Data'])
+    plt.title(title)
+    plt.savefig(dir + title + ".png")
+
+def plot_histogram(dir, gen, real, epoch):
+    plt.figure()
+    condition = [1, 2, 3, 4]
+    x_axis = np.arange(len(condition))
+    plt.bar(x_axis - 0.2, gen, width=0.4, label='Generated')
+    plt.bar(x_axis + 0.2, real, width=0.4, label='Real')
+    plt.xticks(x_axis, condition)
+    plt.xlabel('Condition')
+    plt.ylabel('Total Power (MW)')
+    plt.legend()
+    plt.title('Total Power Generation for 32 days')
+    plt.savefig(dir + "Conditional Total Generation %d.png"%epoch)
+
+# HELPER FUNCTIONS
 def acf(x):
     return np.array([1]+[np.corrcoef(x[:-i], x[i:])[0,1]  \
         for i in range(1, len(x)-1)])
@@ -379,3 +474,34 @@ def bhattacharyya(a, b):
     if not len(a) == len(b):
         raise ValueError("a and b must be of the same size")
     return -math.log(sum((math.sqrt(u * w) for u, w in zip(a, b))))
+
+# Return Second array sorted by euclidean distance
+
+def get_closest_euclidean(A,B):
+    dist = 10000
+    array1 = np.array([])
+    array2 = np.array([])
+    for arrayA in A:
+        for arrayB in B:
+            temp_d = np.linalg.norm(arrayA - arrayB)
+            if temp_d < dist:
+                dist = temp_d
+                array1 = arrayA
+                array2 = arrayB
+    return [array1,array2]
+
+def align_by_euclidean(A, B):
+    A = np.asarray(A, np.float64)
+    B = np.asarray(B, np.float64)
+
+    dist_sqr = (A[:, 0, None] - B[:, 0, None].T) ** 2 + (A[:, 1, None] - B[:, 1, None].T) ** 2
+
+    min_dist_pt = np.argmin(dist_sqr, axis=1)
+
+    reordered_B = B[min_dist_pt, :]
+
+    num_pts = B.shape[0]
+    remaining_indices = list(set(range(num_pts)) - set(min_dist_pt))
+    remaining_B = B[remaining_indices, :]
+
+    return np.vstack((reordered_B, remaining_B))
